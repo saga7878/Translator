@@ -1,141 +1,89 @@
-
-
 import * as vscode from 'vscode';
 import { getWebviewContent } from '../ui/getWebviewContent';
 import { TranslationService } from '../service/translationService';
-import { getSourceLangConfig } from './getSourceLang';
+import { TranslationAction } from '../ui/hoverContentBuilder';
+import { isValidLanguageCode } from './languages';
+import { replaceTranslation } from './replaceTranslation';
 
-export function showTranslationResult(options: {
-    original: string, translation: string, from: string, to: string,
-    translationService:TranslationService
-    
-}) {
-    const { original, translation, from, to, translationService } = options;
-    const panel = vscode.window.createWebviewPanel(
-        'translationResult',
-        'Translation Pannel',
-        vscode.ViewColumn.Beside,
-        {
-            enableScripts: true
-        }
-    );
+type PanelInput = { original: string; translation: string; from: string; to: string;
+    translationService: TranslationService; action?: TranslationAction };
+let panel: vscode.WebviewPanel | undefined;
+let input: PanelInput;
+let sequence = 0;
+let view = 0;
+let latest: { id: number; text: string } | undefined;
 
-    panel.webview.html = getWebviewContent(original, translation, from, to);
-
-    panel.webview.onDidReceiveMessage(
-        async message => {
-            switch (message.command) {
-                case 'translate':
-                    try {
-                        if (!message.text || message.text.trim() === '') {
-                            panel.webview.postMessage({
-                                command: 'updateTranslation',
-                                translation: '请输入要翻译的文本',
-                                from: 'auto',
-                                to: 'zh-Hans'
-                            });
-                            return;
-                        }
-                       
-                        console.log('开始翻译:', message.text);
-                        const config = vscode.workspace.getConfiguration("translator");
-                        const targetLang = config.get("targetLanguage", "zh-Hans");
-                        const sourceLang = await getSourceLangConfig(translationService, message.text);
-                        const to = sourceLang === targetLang ? "en" : targetLang;
-                        
-                        console.log('翻译参数:', { sourceLang, to, service: config.get("service", "microsoft") });
-                        
-                        // 执行翻译
-                        const result = await translationService.translate(message.text, sourceLang, to);
-                        
-                        console.log('翻译结果:', result);
-                        
-                        // 发送结果回 webview
-                        panel.webview.postMessage({
-                            command: 'updateTranslation',
-                            translation: result,
-                            from: sourceLang,
-                            to: to
-                        });
-                    } catch (error) {
-                        console.error('翻译错误:', error);
-                        const errorMessage = error instanceof Error ? error.message : '未知错误';
-                        vscode.window.showErrorMessage(`翻译错误: ${errorMessage}`);
-                        
-                        // 向面板发送错误信息
-                        panel.webview.postMessage({
-                            command: 'updateTranslation',
-                            translation: `翻译失败: ${errorMessage}`,
-                            from: 'error',
-                            to: 'error'
-                        });
-                    }
-                    break;
-            }
-        },
-        undefined
-    );
+function render(data: PanelInput) {
+    input = data;
+    sequence++;
+    view++;
+    latest = data.translation ? { id: 1, text: data.translation } : undefined;
+    const config = vscode.workspace.getConfiguration('translator');
+    const serviceName = config.get<string>('service', 'microsoft') === 'copilot' ? 'GitHub Copilot' : 'Microsoft Edge';
+    panel.webview.html = getWebviewContent(data.original, data.translation,
+        config.get('sourceLanguage', 'auto'), data.to, { canReplace: !!data.action, service: serviceName, session: String(view) });
 }
 
-// 新增：直接显示翻译面板，不需要预先的翻译结果
-export function showEmptyTranslationPanel(translationService: TranslationService) {
-    const panel = vscode.window.createWebviewPanel(
-        'translationResult',
-        'Translation Panel',
-        vscode.ViewColumn.Beside,
-        {
-            enableScripts: true
+function open(data: PanelInput) {
+    if (panel) {
+        panel.reveal(vscode.ViewColumn.Beside);
+        // Clicking the status item again keeps the current text and result.
+        if (data.original) render(data);
+        return;
+    }
+    panel = vscode.window.createWebviewPanel('translationResult', '翻译', vscode.ViewColumn.Beside,
+        { enableScripts: true, retainContextWhenHidden: true });
+    const activePanel = panel;
+    render(data);
+    const receiver = activePanel.webview.onDidReceiveMessage(async message => {
+        if (!message || typeof message.command !== 'string' || message.session !== String(view)) return;
+        if (message.command === 'ready') return;
+        if (!Number.isSafeInteger(message.id)) return;
+        if (message.command === 'copy' && latest?.id === message.id) {
+            await vscode.env.clipboard.writeText(latest.text);
+            await activePanel.webview.postMessage({ command: 'copied', session: message.session, id: message.id });
+            return;
         }
-    );
-
-    // 显示空的翻译面板，用户可以在其中输入文本
-    panel.webview.html = getWebviewContent('', '', 'auto', 'zh-Hans');
-
-    panel.webview.onDidReceiveMessage(
-        async message => {
-            switch (message.command) {
-                case 'translate':
-                    try {
-                        if (!message.text || message.text.trim() === '') {
-                            return;
-                        }
-                       
-                        console.log('开始翻译:', message.text);
-                        const config = vscode.workspace.getConfiguration("translator");
-                        const targetLang = config.get("targetLanguage", "zh-Hans");
-                        const sourceLang = await getSourceLangConfig(translationService, message.text);
-                        const to = sourceLang === targetLang ? "en" : targetLang;
-                        
-                        console.log('翻译参数:', { sourceLang, to, service: config.get("service", "microsoft") });
-                        
-                        // 执行翻译
-                        const result = await translationService.translate(message.text, sourceLang, to);
-                        
-                        console.log('翻译结果:', result);
-                        
-                        // 发送结果回 webview
-                        panel.webview.postMessage({
-                            command: 'updateTranslation',
-                            translation: result,
-                            from: sourceLang,
-                            to: to
-                        });
-                    } catch (error) {
-                        console.error('翻译错误:', error);
-                        const errorMessage = error instanceof Error ? error.message : '未知错误';
-                        vscode.window.showErrorMessage(`翻译错误: ${errorMessage}`);
-                        
-                        // 向面板发送错误信息
-                        panel.webview.postMessage({
-                            command: 'updateTranslation',
-                            translation: `翻译失败: ${errorMessage}`,
-                            from: 'error',
-                            to: 'error'
-                        });
-                    }
-                    break;
-            }
-        },
-        undefined
-    );
+        if (message.command === 'replace' && latest?.id === message.id && input.action) {
+            const ok = await replaceTranslation({ ...input.action, translation: latest.text });
+            await activePanel.webview.postMessage({ command: 'replaced', session: message.session, id: message.id, ok });
+            return;
+        }
+        if (message.command !== 'translate' || typeof message.text !== 'string' || !message.text.trim()) return;
+        if (typeof message.from !== 'string' || typeof message.to !== 'string' ||
+            !isValidLanguageCode(message.from) || !isValidLanguageCode(message.to) || message.to === 'auto') return;
+        const current = ++sequence;
+        latest = undefined;
+        const service = input.translationService;
+        try {
+            const result = await service.translateForReading(message.text, message.from, message.to);
+            if (panel !== activePanel || current !== sequence) return;
+            latest = { id: message.id, text: result.text };
+            await activePanel.webview.postMessage({ command: 'result', session: message.session, id: message.id,
+                translation: result.text, from: result.from, to: result.to });
+        } catch (error) {
+            if (panel !== activePanel || current !== sequence) return;
+            await activePanel.webview.postMessage({ command: 'error', session: message.session, id: message.id,
+                message: error instanceof Error ? error.message : '服务暂时不可用，请稍后重试。' });
+        }
+    });
+    const configuration = vscode.workspace.onDidChangeConfiguration(event => {
+        if (event.affectsConfiguration('translator.service')) {
+            sequence++; latest = undefined;
+            activePanel.webview.postMessage({ command: 'serviceChanged', session: String(view), service:
+                vscode.workspace.getConfiguration('translator').get<string>('service', 'microsoft') === 'copilot'
+                    ? 'GitHub Copilot' : 'Microsoft Edge' });
+        }
+    });
+    activePanel.onDidDispose(() => { receiver.dispose(); configuration.dispose(); if (panel === activePanel) {
+        panel = undefined; latest = undefined; sequence++;
+    } });
 }
+
+export function showTranslationResult(options: PanelInput) { open(options); }
+export function showEmptyTranslationPanel(service: TranslationService) {
+    const config = vscode.workspace.getConfiguration('translator');
+    open({ original: '', translation: '', from: config.get('sourceLanguage', 'auto'),
+        to: config.get('targetLanguage', 'zh-Hans'), translationService: service });
+}
+export function disposeTranslationPanel() { panel?.dispose(); }

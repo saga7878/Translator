@@ -1,10 +1,25 @@
 import { CachedTranslator } from "../service/translation/cachedTranslator";
-import { ITranslator } from "../types";
+import { ITranslator, TranslationResult } from "../types";
 import { TranslationQueue } from "../utils/translationQueue";
 
 class TranslationService {
     translator: ITranslator;
     private queue: TranslationQueue;
+
+    setTranslator(translator: ITranslator) {
+        this.translator = new CachedTranslator(translator);
+        this.queue = new TranslationQueue(this.translator, 3);
+    }
+
+    async translateForReading(text: string, from = 'auto', to = 'zh-Hans'): Promise<TranslationResult> {
+        const translator = this.translator;
+        let result = await translator.translate({ text, from, to });
+        if (from === 'auto' && result.from === to) {
+            const opposite = to.startsWith('zh') ? 'en' : 'zh-Hans';
+            result = await translator.translate({ text, from: result.from, to: opposite });
+        }
+        return result;
+    }
 
     constructor(translator: ITranslator, queueConcurrency: number = 3) {
         // 使用缓存装饰器包装翻译器

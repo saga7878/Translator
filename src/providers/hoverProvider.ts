@@ -1,125 +1,62 @@
-// src/providers/hoverProvider.ts
 import * as vscode from 'vscode';
-import { HoverContentBuilder } from '../ui/hoverContentBuilder';
-import { getLanguageName, getOppositeLanguage } from '../utils/languages';
-import { BaseProvider } from './baseProvider';
 import { TranslationService } from '../service/translationService';
+import { HoverContentBuilder, TranslationAction } from '../ui/hoverContentBuilder';
+import { TranslationResult } from '../types';
 
-export class HoverProvider extends BaseProvider implements vscode.HoverProvider {
-    private hoverEnabled: boolean;
-    private minimumTextLength: number;
-    private sourceLanguage: string;
-    private targetLanguage: string;
-    private isTriggeredByCommand :boolean = false;
+export function makeAction(document: vscode.TextDocument, range: vscode.Range, translation: string): TranslationAction {
+    return { translation, original: document.getText(range), uri: document.uri.toString(), version: document.version,
+        range: { start: { line: range.start.line, character: range.start.character },
+            end: { line: range.end.line, character: range.end.character } } };
+}
 
-    constructor(
-        translationService: TranslationService,
-    ) {
-        super(translationService);
-        this.updateConfiguration();
-        // 监听配置变化
-        vscode.workspace.onDidChangeConfiguration(e => {
-            if (e.affectsConfiguration('translator')) {
-                this.updateConfiguration();
+export class HoverProvider implements vscode.HoverProvider {
+    private shown?: { action: TranslationAction; result: TranslationResult };
+    private generation = 0;
+    private pending = new Map<string, Promise<TranslationResult>>();
+    constructor(private service: TranslationService) {}
+
+    show(action: TranslationAction, result: TranslationResult) { this.shown = { action, result }; }
+    clear() { this.shown = undefined; this.pending.clear(); this.generation++; }
+
+    async provideHover(document: vscode.TextDocument, position: vscode.Position, token: vscode.CancellationToken) {
+        const shown = this.shown;
+        if (shown && shown.action.uri === document.uri.toString() && shown.action.version === document.version) {
+            const r = shown.action.range;
+            const range = new vscode.Range(r.start.line, r.start.character, r.end.line, r.end.character);
+            if (range.contains(position)) {
+                return HoverContentBuilder.build(shown.action.original, shown.result.text,
+                    shown.result.from, shown.result.to, false, range, shown.action);
             }
-        });
-    }
-
-    private updateConfiguration() {
-        const config = this.getConfiguration();
-        this.hoverEnabled = config.get<boolean>('hoverEnabled', true);
-        this.minimumTextLength = config.get<number>('minimumTextLength', 2);
-        this.sourceLanguage = config.get<string>('sourceLanguage', 'auto');
-        this.targetLanguage = config.get<string>('targetLanguage', 'zh-Hans');
-    }
-
-    setTriggeredByCommand(value: boolean) {
-        this.isTriggeredByCommand = value;
-    }
-
-    getSelectionOrWordRange(editor: vscode.TextEditor, position: vscode.Position): vscode.Range {
-        if (!editor.selection.isEmpty) {
-            return editor.selection;
         }
-        
-        const line = editor.document.lineAt(position.line);
-        const lineText = line.text;
-        
-        // 查找注释起始位置
-        const commentStart = lineText.indexOf('//');
-        if (commentStart >= 0) {
-            const start = new vscode.Position(position.line, commentStart + 2); // +2 跳过 //
-            const end = new vscode.Position(position.line, lineText.length);
-            return new vscode.Range(start, end);
+        const config = vscode.workspace.getConfiguration('translator');
+        if (!config.get('hoverEnabled', false)) return;
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || editor.document.uri.toString() !== document.uri.toString()) return;
+        const range = !editor.selection.isEmpty && editor.selection.contains(position)
+            ? editor.selection : document.getWordRangeAtPosition(position);
+        if (!range) return;
+        const text = document.getText(range);
+        if (text.trim().length < config.get('minimumTextLength', 2)) return;
+        const version = document.version;
+        const generation = this.generation;
+        await new Promise(resolve => setTimeout(resolve, config.get('hoverDelay', 300)));
+        if (token.isCancellationRequested || document.version !== version || generation !== this.generation) return;
+        const from = config.get('sourceLanguage', 'auto');
+        const to = config.get('targetLanguage', 'zh-Hans');
+        const key = JSON.stringify([text, from, to]);
+        let request = this.pending.get(key);
+        if (!request) {
+            request = this.service.translateForReading(text, from, to);
+            this.pending.set(key, request);
         }
-        
-        // 如果不是注释，返回单词范围
-        return editor.document.getWordRangeAtPosition(position) || new vscode.Range(position, position);
-    }
-    
-
-    async provideHover(
-        document: vscode.TextDocument,
-        position: vscode.Position,
-        token: vscode.CancellationToken
-    ): Promise<vscode.Hover | undefined> {
         try {
-            if (!this.hoverEnabled && !this.isTriggeredByCommand) {
-                return undefined;
-            }
-            const editor = vscode.window.activeTextEditor;
-            if (!editor) return;
-            const range = this.getSelectionOrWordRange(editor, position);
-            if (!range) {
-                return undefined;
-            }
-    
-            const text = document.getText(range);
-           
-            if (text.length < this.minimumTextLength) {
-                return undefined;
-            }
-    
-            let sourceLanguage = this.sourceLanguage;
-            let targetLanguage = this.targetLanguage;
-    
-            // 如果配置为自动检测，则使用检测服务
-            if (sourceLanguage === 'auto') {
-                try {
-                    sourceLanguage = await this.translationService.detectLanguage(text);
-                } catch (error) {
-                    console.warn('Language detection failed, falling back to auto', error);
-                    sourceLanguage = 'auto';
-                }
-            }
-    
-            // 如果源语言和目标语言相同，自动切换目标语言
-            if (sourceLanguage === targetLanguage) {
-                targetLanguage = getOppositeLanguage(sourceLanguage);
-            }
-    
-            const cached = this.translationService.translator.getCached(text, sourceLanguage, targetLanguage);
-          
-            if (cached) {
-                const fromLang = getLanguageName(cached.from);
-                const toLang = getLanguageName(cached.to);
-                return HoverContentBuilder.build(
-                    text,
-                    cached.text,
-                    fromLang,
-                    toLang,
-                    false,
-                    range
-                );
-            }
-    
-            return undefined;
-        } catch (error) {
-            this.logError(error, 'HoverProvider');
-            this.isTriggeredByCommand = false;
-            return undefined;
-        } finally {
-            this.isTriggeredByCommand = false;
-        }
+            const result = await request;
+            if (token.isCancellationRequested || document.version !== version || generation !== this.generation) return;
+            const action = makeAction(document, range, result.text);
+            return HoverContentBuilder.build(text, result.text, result.from, result.to, false, range, action);
+        } catch {
+            // Passive hovering should not interrupt typing with notifications.
+            return;
+        } finally { if (this.pending.get(key) === request) this.pending.delete(key); }
     }
 }

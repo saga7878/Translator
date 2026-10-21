@@ -15,7 +15,7 @@
     "config.minimumTextLength.description": "Minimum text length for translation",
     "config.sourceLanguage.description": "Source language",
     "config.targetLanguage.description": "Target language",
-    "config.hoverEnabled.description": "Enable hover translation caching",
+    "config.hoverEnabled.description": "Automatically translate on hover (requests the selected translation service)",
     "config.hoverDelay.description": "Hover delay time in milliseconds",
     "config.cacheTimeout.description": "Translation cache timeout in seconds",
     "language.auto": "Auto detect",

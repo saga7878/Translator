@@ -3,7 +3,7 @@
   "displayName": "%displayName%",
   "description": "%description%",
   "publisher": "Ninja",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "icon": "icon.png",
   "repository": "https://github.com/saga7878/Translator.git",
   "private": "true",
@@ -183,7 +183,15 @@
           "description": "%config.cacheTimeout.description%"
         }
       }
-    }
+    },
+    "keybindings": [
+      {
+        "command": "translator.translateHover",
+        "key": "ctrl+alt+t",
+        "mac": "cmd+alt+t",
+        "when": "editorTextFocus && editorHasSelection"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
@@ -191,7 +199,7 @@
     "watch": "webpack --watch --config ./build/node-extension.webpack.config.js",
     "package": "webpack --mode production --devtool hidden-source-map --config ./build/node-extension.webpack.config.js",
     "test-compile": "tsc -p ./",
-    "test:translation": "mocha --ui tdd --require ts-node/register src/test/microsoft.test.ts",
+    "test:translation": "mocha --ui tdd --require ts-node/register \"src/test/*.test.ts\"",
     "test-watch": "tsc -watch -p ./",
     "pretest": "yarn run test-compile && yarn run lint",
     "lint": "eslint src --ext ts",
