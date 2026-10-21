@@ -1,1 +1,14 @@
 node_modules
+dist
+.vscode
+.idea
+
+# Local credentials and private artifacts
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.vsix
